@@ -1,0 +1,21 @@
+/*
+
+所有的const类型，除了包含Type，还包含初始值
+
+UnitNode 包含两个成员变量，分别是一个vector，里面存放的是DeclNode或者是FuncDefNode
+可以使用函数addDecl()或者addFuncDef()向vector中添加成员变量
+
+Decl就是Decl，具体什么还需要再考虑一下
+
+ConstDefList 包含一个成员变量，是一个vector，里面存放的是ConstDefNode
+可以使用函数addConstDef()向vector中添加成员变量
+可以使用函数getConstDefList()获取vector
+
+ConstDefNode 包含两个成员变量，分别是一个string，存放的是常量的名字，一个ExpNode，存放的是常量的值,
+如果是数组的话，ExpNode里面存放的是一个ArrayNode
+可以使用函数getName()获取常量的名字
+可以使用函数getValue()获取常量的表达式
+可以使用函数setName()设置常量的名字
+可以使用函数setValue()设置常量的表达式
+
+*/

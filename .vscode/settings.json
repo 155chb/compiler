@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "*.embeddedhtml": "html",
+        "parser_for_type": "cpp",
+        "sstream": "cpp"
+    }
+}
