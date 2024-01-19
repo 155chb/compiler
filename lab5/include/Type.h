@@ -74,7 +74,7 @@ private:
     Type *baseType;
     int size;
 public:
-    ArrayType(Type *baseType, int size) : Type(Type::ARRAY, false), baseType(baseType), size(size){};
+    ArrayType(Type *baseType, int size) : Type(Type::ARRAY, true), baseType(baseType), size(size){};
     void setBaseType(Type *baseType);
     Type* getBaseType() const {return baseType;};
     Type* getBaseType(int depth) const;
@@ -89,7 +89,7 @@ class PointerType : public Type
 private:
     Type *valueType;
 public:
-    PointerType(Type* valueType) : Type(Type::PTR, false) {this->valueType = valueType;};
+    PointerType(Type* valueType) : Type(Type::PTR, true) {this->valueType = valueType;};
     Type* getValueType() const {return valueType;};
     std::string toStr();
 };

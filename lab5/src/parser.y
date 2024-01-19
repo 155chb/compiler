@@ -16,9 +16,11 @@
 
 %{
     /* 自定义内容 */
-    #ifndef AST_CHECK
-    #define AST_CHECK false
+    #ifdef AST_CHECK
+    #undef AST_CHECK
     #endif
+    #define AST_CHECK 0
+
     char outfile[256] = "a.out";
     std::vector<Type*> typeStack;
     bool inFuncDef = false;
@@ -189,7 +191,7 @@ ConstArrays
         if (AST_CHECK) printf("ConstArrays -> ConstArrays LBRACK ConstExp RBRACK\n");
         $$ = $1;
         Type *newType = new ArrayType(typeStack.back(), $3->getSymbolEntry()->getIntValue());
-        ((ArrayType*)$$)->setBaseType(newType);
+        ((ArrayType*)((ConstArrays*)($$)->getType()))->setBaseType(newType);
     }
     ;
 
@@ -271,13 +273,13 @@ VarDef
         if (AST_CHECK) printf("VarDef -> ID ConstArrays(ID: %s)\n", $1);
         SymbolEntry *se = new IdentifierSymbolEntry($2->getType(), $1, identifiers->getLevel(), 0, 0.0, nullptr);
         identifiers->install($1, se);
-        $$ = new ConstDef(se, nullptr);
+        $$ = new VarDef(se, nullptr);
     }
     | ID ConstArrays ASSIGN InitVal {
         if (AST_CHECK) printf("VarDef -> ID ConstArrays ASSIGN InitVal(ID: %s)\n", $1);
         SymbolEntry *se = new IdentifierSymbolEntry($2->getType(), $1, identifiers->getLevel(), 0, 0.0, $4);
         identifiers->install($1, se);
-        $$ = new ConstDef(se, $4);
+        $$ = new VarDef(se, $4);
     }
     ;
 
@@ -390,7 +392,7 @@ FuncFParam
     }
     | BType ID LBRACK RBRACK {
         if (AST_CHECK) printf("FuncFParam -> BType ID LBRACK RBRACK(ID: %s)\n", $2);
-        Type *newType = new ArrayType(typeStack.back(), -1);
+        Type *newType = new PointerType(typeStack.back());
         SymbolEntry *se = new IdentifierSymbolEntry(newType, $2, identifiers->getLevel(), 0, 0.0, nullptr);
         identifiers->install($2, se);
         $$ = new FuncFParam(se);
@@ -398,7 +400,7 @@ FuncFParam
     }
     | BType ID LBRACK RBRACK ConstArrays {
         if (AST_CHECK) printf("FuncFParam -> BType ID LBRACK RBRACK ConstArrays(ID: %s)\n", $2);
-        Type *newType = new ArrayType($5->getType(), -1);
+        Type *newType = new PointerType($5->getType());
         SymbolEntry *se = new IdentifierSymbolEntry(newType, $2, identifiers->getLevel(), 0, 0.0, nullptr);
         identifiers->install($2, se);
         $$ = new FuncFParam(se);
@@ -606,14 +608,24 @@ UnaryExp
         if (exprSE->getType()->isConst()) {
             if (exprSE->getType()->isInt())
                 se = new TemporarySymbolEntry(TypeSystem::intType, SymbolTable::getLabel(), -exprSE->getIntValue(), 0.0);
-            else
-                se = new TemporarySymbolEntry(TypeSystem::floatType, SymbolTable::getLabel(), 0, -exprSE->getFloatValue());           
+            else if (exprSE->getType()->isFloat())
+                se = new TemporarySymbolEntry(TypeSystem::floatType, SymbolTable::getLabel(), 0, -exprSE->getFloatValue());
+            else {
+                std::vector<int> dims = ((ArrayType*)exprSE->getType())->getSizeList();
+                Type *baseType = ((ArrayType*)(exprSE->getType()))->getBaseType(dims.size() - 1);
+                se = new TemporarySymbolEntry(baseType, SymbolTable::getLabel(), 0, 0.0);
+            }
         }
         else {
             if (exprSE->getType()->isInt())
                 se = new TemporarySymbolEntry(TypeSystem::intType, SymbolTable::getLabel(), 0, 0.0);
-            else
+            else if (exprSE->getType()->isFloat())
                 se = new TemporarySymbolEntry(TypeSystem::floatType, SymbolTable::getLabel(), 0, 0.0);
+            else {
+                std::vector<int> dims = ((ArrayType*)exprSE->getType())->getSizeList();
+                Type *baseType = ((ArrayType*)(exprSE->getType()))->getBaseType(dims.size() - 1);
+                se = new TemporarySymbolEntry(baseType, SymbolTable::getLabel(), 0, 0.0);
+            }
         }
         $$ = new UnaryExp(se, UnaryExp::MINUS, $2);
     }
@@ -662,7 +674,7 @@ MulExp
                 se = new TemporarySymbolEntry(TypeSystem::constFloatType, SymbolTable::getLabel(), 0, exprSE1->getFloatValue() * exprSE2->getFloatValue());
             else
                 se = new TemporarySymbolEntry(TypeSystem::floatType, SymbolTable::getLabel(), 0, 0.0);
-        else
+        else if ((type1->isFloat() && type2->isInt()) || (type1->isInt() && type2->isFloat()))
             if (type1->isConst() && type2->isConst())
                 if (type1->isInt())
                     se = new TemporarySymbolEntry(TypeSystem::constFloatType, SymbolTable::getLabel(), 0, exprSE1->getIntValue() * exprSE2->getFloatValue());
@@ -670,6 +682,27 @@ MulExp
                     se = new TemporarySymbolEntry(TypeSystem::constFloatType, SymbolTable::getLabel(), 0, exprSE1->getFloatValue() * exprSE2->getIntValue());
             else
                 se = new TemporarySymbolEntry(TypeSystem::floatType, SymbolTable::getLabel(), 0, 0.0);
+        else {
+            Type *baseType1 = type1, *baseType2 = type2;
+            if (baseType1->isPtr()) {
+                baseType1 = ((PointerType*)type1)->getValueType();
+            }
+            if (baseType2->isPtr()) {
+                baseType2 = ((PointerType*)type2)->getValueType();
+            }
+            if (baseType1->isArray()) {
+                std::vector<int> dims = ((ArrayType*)baseType1)->getSizeList();
+                baseType1 = ((ArrayType*)baseType1)->getBaseType(dims.size() - 1);
+            }
+            if (baseType2->isArray()) {
+                std::vector<int> dims = ((ArrayType*)baseType2)->getSizeList();
+                baseType2 = ((ArrayType*)baseType2)->getBaseType(dims.size() - 1);
+            }
+            if (baseType1->isInt() && baseType2->isInt())
+                se = new TemporarySymbolEntry(TypeSystem::intType, SymbolTable::getLabel(), 0, 0.0);
+            else
+                se = new TemporarySymbolEntry(TypeSystem::floatType, SymbolTable::getLabel(), 0, 0.0);
+        }
         $$ = new MulExp(se, MulExp::MULT, $1, $3);
     }
     | MulExp DIV UnaryExp {
@@ -686,7 +719,7 @@ MulExp
                 se = new TemporarySymbolEntry(TypeSystem::constFloatType, SymbolTable::getLabel(), 0, exprSE1->getFloatValue() / exprSE2->getFloatValue());
             else
                 se = new TemporarySymbolEntry(TypeSystem::floatType, SymbolTable::getLabel(), 0, 0.0);
-        else
+        else if ((type1->isFloat() && type2->isInt()) || (type1->isInt() && type2->isFloat()))
             if (type1->isConst() && type2->isConst())
                 if (type1->isInt())
                     se = new TemporarySymbolEntry(TypeSystem::constFloatType, SymbolTable::getLabel(), 0, exprSE1->getIntValue() / exprSE2->getFloatValue());
@@ -694,6 +727,27 @@ MulExp
                     se = new TemporarySymbolEntry(TypeSystem::constFloatType, SymbolTable::getLabel(), 0, exprSE1->getFloatValue() / exprSE2->getIntValue());
             else
                 se = new TemporarySymbolEntry(TypeSystem::floatType, SymbolTable::getLabel(), 0, 0.0);
+        else {
+            Type *baseType1 = type1, *baseType2 = type2;
+            if (baseType1->isPtr()) {
+                baseType1 = ((PointerType*)type1)->getValueType();
+            }
+            if (baseType2->isPtr()) {
+                baseType2 = ((PointerType*)type2)->getValueType();
+            }
+            if (baseType1->isArray()) {
+                std::vector<int> dims = ((ArrayType*)baseType1)->getSizeList();
+                baseType1 = ((ArrayType*)baseType1)->getBaseType(dims.size() - 1);
+            }
+            if (baseType2->isArray()) {
+                std::vector<int> dims = ((ArrayType*)baseType2)->getSizeList();
+                baseType2 = ((ArrayType*)baseType2)->getBaseType(dims.size() - 1);
+            }
+            if (baseType1->isInt() && baseType2->isInt())
+                se = new TemporarySymbolEntry(TypeSystem::intType, SymbolTable::getLabel(), 0, 0.0);
+            else
+                se = new TemporarySymbolEntry(TypeSystem::floatType, SymbolTable::getLabel(), 0, 0.0);
+        }
         $$ = new MulExp(se, MulExp::DIV, $1, $3);
     }
     | MulExp MOD UnaryExp {
@@ -729,7 +783,7 @@ AddExp
                 se = new TemporarySymbolEntry(TypeSystem::constFloatType, SymbolTable::getLabel(), 0, exprSE1->getFloatValue() + exprSE2->getFloatValue());
             else
                 se = new TemporarySymbolEntry(TypeSystem::floatType, SymbolTable::getLabel(), 0, 0.0);
-        else
+        else if ((type1->isFloat() && type2->isInt()) || (type1->isInt() && type2->isFloat()))
             if (type1->isConst() && type2->isConst())
                 if (type1->isInt())
                     se = new TemporarySymbolEntry(TypeSystem::constFloatType, SymbolTable::getLabel(), 0, exprSE1->getIntValue() + exprSE2->getFloatValue());
@@ -737,6 +791,27 @@ AddExp
                     se = new TemporarySymbolEntry(TypeSystem::constFloatType, SymbolTable::getLabel(), 0, exprSE1->getFloatValue() + exprSE2->getIntValue());
             else
                 se = new TemporarySymbolEntry(TypeSystem::floatType, SymbolTable::getLabel(), 0, 0.0);
+        else {
+            Type *baseType1 = type1, *baseType2 = type2;
+            if (baseType1->isPtr()) {
+                baseType1 = ((PointerType*)type1)->getValueType();
+            }
+            if (baseType2->isPtr()) {
+                baseType2 = ((PointerType*)type2)->getValueType();
+            }
+            if (baseType1->isArray()) {
+                std::vector<int> dims = ((ArrayType*)baseType1)->getSizeList();
+                baseType1 = ((ArrayType*)baseType1)->getBaseType(dims.size() - 1);
+            }
+            if (baseType2->isArray()) {
+                std::vector<int> dims = ((ArrayType*)baseType2)->getSizeList();
+                baseType2 = ((ArrayType*)baseType2)->getBaseType(dims.size() - 1);
+            }
+            if (baseType1->isInt() && baseType2->isInt())
+                se = new TemporarySymbolEntry(TypeSystem::intType, SymbolTable::getLabel(), 0, 0.0);
+            else
+                se = new TemporarySymbolEntry(TypeSystem::floatType, SymbolTable::getLabel(), 0, 0.0);
+        }
         $$ = new AddExp(se, AddExp::ADD, $1, $3);
     }
     | AddExp SUB MulExp {
@@ -753,7 +828,7 @@ AddExp
                 se = new TemporarySymbolEntry(TypeSystem::constFloatType, SymbolTable::getLabel(), 0, exprSE1->getFloatValue() - exprSE2->getFloatValue());
             else
                 se = new TemporarySymbolEntry(TypeSystem::floatType, SymbolTable::getLabel(), 0, 0.0);
-        else
+        else if ((type1->isFloat() && type2->isInt()) || (type1->isInt() && type2->isFloat()))
             if (type1->isConst() && type2->isConst())
                 if (type1->isInt())
                     se = new TemporarySymbolEntry(TypeSystem::constFloatType, SymbolTable::getLabel(), 0, exprSE1->getIntValue() - exprSE2->getFloatValue());
@@ -761,6 +836,27 @@ AddExp
                     se = new TemporarySymbolEntry(TypeSystem::constFloatType, SymbolTable::getLabel(), 0, exprSE1->getFloatValue() - exprSE2->getIntValue());
             else
                 se = new TemporarySymbolEntry(TypeSystem::floatType, SymbolTable::getLabel(), 0, 0.0);
+        else {
+            Type *baseType1 = type1, *baseType2 = type2;
+            if (baseType1->isPtr()) {
+                baseType1 = ((PointerType*)type1)->getValueType();
+            }
+            if (baseType2->isPtr()) {
+                baseType2 = ((PointerType*)type2)->getValueType();
+            }
+            if (baseType1->isArray()) {
+                std::vector<int> dims = ((ArrayType*)baseType1)->getSizeList();
+                baseType1 = ((ArrayType*)baseType1)->getBaseType(dims.size() - 1);
+            }
+            if (baseType2->isArray()) {
+                std::vector<int> dims = ((ArrayType*)baseType2)->getSizeList();
+                baseType2 = ((ArrayType*)baseType2)->getBaseType(dims.size() - 1);
+            }
+            if (baseType1->isInt() && baseType2->isInt())
+                se = new TemporarySymbolEntry(TypeSystem::intType, SymbolTable::getLabel(), 0, 0.0);
+            else
+                se = new TemporarySymbolEntry(TypeSystem::floatType, SymbolTable::getLabel(), 0, 0.0);
+        }
         $$ = new AddExp(se, AddExp::SUB, $1, $3);
     }
     ;

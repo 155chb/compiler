@@ -330,7 +330,12 @@ void AllocaInstruction::output() const
     std::string dst, type;
     dst = operands[0]->toStr();
     type = se->getType()->toStr();
-    fprintf(yyout, "  %s = alloca %s, align 4\n", dst.c_str(), type.c_str());
+    if (se->getType()->isArray()) {
+        fprintf(yyout, "  %s = alloca %s, align 4\n", dst.c_str(), type.c_str());
+        fprintf(yyout, "  store %s zeroinitializer, %s* %s, align 4\n", type.c_str(), type.c_str(), dst.c_str());
+    }
+    else
+        fprintf(yyout, "  %s = alloca %s, align 4\n", dst.c_str(), type.c_str());
     if (GENCODE_CHECK) printf("AllocaInstruction output finished.\n");
 }
 

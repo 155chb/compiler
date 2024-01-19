@@ -4,9 +4,12 @@
 #include "Type.h"
 #include <set>
 
-#ifndef AST_CHECK
-#define AST_CHECK 0
+bool a = 0;
+
+#ifdef AST_CHECK
+#undef AST_CHECK
 #endif
+#define AST_CHECK a
 
 #define TYPE_CHECK 0
 
@@ -22,6 +25,8 @@ IRBuilder *Node::builder = nullptr;
 
 Type* retType_for_typeCheck = nullptr;
 std::vector<WhileStmt*> whileStmtStack_for_genCode;
+bool isLVal = false;
+bool isRParams = false;
 std::set<std::string> sysyRunLibFuncs = {
     "@getint", "@getch", "@getarray", "@getfloat", "@getfarray", "@putint", "@putch", "@putarray", "@putfloat", "@putfarray"
 };
@@ -54,7 +59,7 @@ std::vector<Type*> FuncFParams::getParamsType()
 }
 
 void Ast::output()
-{   
+{
     if (AST_CHECK) yyout = stdout;
     if (root != nullptr)
         root->output(0);
@@ -978,9 +983,15 @@ void ExprStmt::genCode()
 void AssignStmt::genCode()
 {
     if (GENCODE_CHECK) printf("%*cAssignStmt genCoding...\n", ++check_depth, ' ');
+    isLVal = true;
     lval->genCode();
+    isLVal = false;
     expr->genCode();
-    Operand *dst_addr = dynamic_cast<IdentifierSymbolEntry*>(lval->getSymbolEntry())->getAddr();
+    Operand *dst_addr;
+    if (lval->getSymbolEntry()->getType()->isConst())
+        dst_addr = lval->getOperand();
+    else
+        dst_addr = dynamic_cast<IdentifierSymbolEntry*>(lval->getSymbolEntry())->getAddr();
     new StoreInstruction(dst_addr, expr->getOperand(), builder->getInsertBB());
     if (GENCODE_CHECK) printf("%*cAssignStmt genCode passed!\n", check_depth--, ' ');
 }
@@ -1089,12 +1100,17 @@ void FuncFParam::genCode()
     Function *func = builder->getInsertBB()->getParent();
     SymbolEntry *addr_se = new TemporarySymbolEntry(new PointerType(se->getType()), SymbolTable::getLabel(), 0, 0.0);
     Operand *temp = new Operand(new TemporarySymbolEntry(se->getType(), SymbolTable::getLabel(), 0, 0.0));
-    dynamic_cast<IdentifierSymbolEntry*>(se)->setAddr(new Operand(addr_se));
+    if (!se->getType()->isPtr())
+        dynamic_cast<IdentifierSymbolEntry*>(se)->setAddr(new Operand(addr_se));
+    else
+        dynamic_cast<IdentifierSymbolEntry*>(se)->setAddr(temp);
     if (GENCODE_CHECK) printf("%p -> %p\n", se, dynamic_cast<IdentifierSymbolEntry*>(se)->getAddr());
     func->paramsInstall(se, temp);
     BasicBlock *bb = func->getEntry();
-    new AllocaInstruction(dynamic_cast<IdentifierSymbolEntry*>(se)->getAddr(), se, bb);
-    new StoreInstruction(dynamic_cast<IdentifierSymbolEntry*>(se)->getAddr(), temp, bb);
+    if (!se->getType()->isPtr()) {
+        new AllocaInstruction(dynamic_cast<IdentifierSymbolEntry*>(se)->getAddr(), se, bb);
+        new StoreInstruction(dynamic_cast<IdentifierSymbolEntry*>(se)->getAddr(), temp, bb);       
+    }
     if (GENCODE_CHECK) printf("%*cFuncFParam genCode passed!\n", check_depth--, ' ');
 }
 
@@ -1134,19 +1150,58 @@ void LVal::genCode()
 {
     if (GENCODE_CHECK) printf("%*cLVal genCoding...\n", ++check_depth, ' ');
     if (arrs == nullptr) {
-        dst = new Operand(new TemporarySymbolEntry(se->getType(), SymbolTable::getLabel(), 0, 0.0));
-        Operand *addr = dynamic_cast<IdentifierSymbolEntry*>(se)->getAddr();
-        new LoadInstruction(dst, addr, builder->getInsertBB());
+        if (!se->getType()->isArray() && !se->getType()->isPtr()) {
+            dst = new Operand(new TemporarySymbolEntry(se->getType(), SymbolTable::getLabel(), 0, 0.0));
+            Operand *addr = dynamic_cast<IdentifierSymbolEntry*>(se)->getAddr();
+            new LoadInstruction(dst, addr, builder->getInsertBB());
+        }
+        else {
+            if (isRParams && se->getType()->isArray()) {
+                Operand *src = dynamic_cast<IdentifierSymbolEntry*>(se)->getAddr();
+                Type *newType = new PointerType(dynamic_cast<ArrayType*>(se->getType())->getBaseType());
+                dst = new Operand(new TemporarySymbolEntry(newType, SymbolTable::getLabel(), 0, 0.0));
+                new typeCastInstruction(dst, src, builder->getInsertBB());
+            }
+            else
+                dst = dynamic_cast<IdentifierSymbolEntry*>(se)->getAddr();
+        }
     }
     else {
+        bool temp_val = isLVal, temp_rparams = isRParams;
+        isLVal = false, isRParams = false;
         arrs->genCode();
         std::vector<Operand*> idxs;
-        Type *type = dynamic_cast<ArrayType*>(se->getType())->getBaseType(idxs.size()-1);
-        dst = new Operand(new TemporarySymbolEntry(new PointerType(type), SymbolTable::getLabel(), 0, 0.0));
+        idxs.push_back(new Operand(new ConstantSymbolEntry(TypeSystem::intType, 0, 0.0)));
         for (auto expr : arrs->getList())
             idxs.push_back(dynamic_cast<ExprNode*>(expr)->getOperand());
-        Operand *addr = dynamic_cast<IdentifierSymbolEntry*>(se)->getAddr();
-        new getElePtrInstruction(dst, addr, idxs, builder->getInsertBB());
+        Type *type;
+        if (se->getType()->isArray()) {
+            type = dynamic_cast<ArrayType*>(se->getType())->getBaseType(idxs.size()-2);
+            dst = new Operand(new TemporarySymbolEntry(new PointerType(type), SymbolTable::getLabel(), 0, 0.0));
+            Operand *addr = dynamic_cast<IdentifierSymbolEntry*>(se)->getAddr();
+            new getElePtrInstruction(dst, addr, idxs, builder->getInsertBB());
+            if (!temp_val) {
+                Operand *dst_val = new Operand(new TemporarySymbolEntry(type, SymbolTable::getLabel(), 0, 0.0));
+                new LoadInstruction(dst_val, dst, builder->getInsertBB());
+                dst = dst_val;
+            }
+        }
+        else {
+            if (idxs.size() > 2)
+                type = dynamic_cast<ArrayType*>(dynamic_cast<PointerType*>(se->getType())->getValueType())->getBaseType(idxs.size()-3);
+            else
+                type = dynamic_cast<PointerType*>(se->getType())->getValueType();
+            Operand *addr = dynamic_cast<IdentifierSymbolEntry*>(se)->getAddr();
+            dst = new Operand(new TemporarySymbolEntry(new PointerType(type), SymbolTable::getLabel(), 0, 0.0));
+            idxs.erase(idxs.begin());
+            new getElePtrInstruction(dst, addr, idxs, builder->getInsertBB());
+            if (!temp_val) {
+                Operand *dst_val = new Operand(new TemporarySymbolEntry(type, SymbolTable::getLabel(), 0, 0.0));
+                new LoadInstruction(dst_val, dst, builder->getInsertBB());
+                dst = dst_val;
+            }
+        }
+        isRParams = temp_rparams;
     }
     if (GENCODE_CHECK) printf("%*cLVal genCode passed!\n", check_depth--, ' ');
 }
@@ -1455,9 +1510,13 @@ void FuncCall::genCode()
     if (GENCODE_CHECK) printf("%*cFuncCall genCoding...\n", ++check_depth, ' ');
     std::vector<Operand*> args;
     if (funcRParams != nullptr) {
+        isRParams = true;
         funcRParams->genCode();
-        for (auto expr : funcRParams->getList())
-            args.push_back(dynamic_cast<ExprNode*>(expr)->getOperand());        
+        isRParams = false;
+        for (auto expr : funcRParams->getList()) {
+            args.push_back(dynamic_cast<ExprNode*>(expr)->getOperand());          
+        }
+      
     }
     Type* retType = dynamic_cast<FunctionType*>(funcSE->getType())->getRetType();
     if (retType->isVoid())
@@ -1518,7 +1577,26 @@ void FuncDef::genCode()
                 }
             }
         }
+        if ((*bb)->empty()) {
+            Type *retType = dynamic_cast<FunctionType*>(se->getType())->getRetType();
+            if (retType->isVoid())
+                new RetInstruction(nullptr, *bb);
+            else if (retType->isInt()) {
+                Operand *zero = new Operand(new ConstantSymbolEntry(TypeSystem::intType, 0, 0.0));
+                new RetInstruction(zero, *bb);
+            }
+            else {
+                Operand *zero = new Operand(new ConstantSymbolEntry(TypeSystem::floatType, 0, 0.0));
+                new RetInstruction(zero, *bb);
+            }
+            continue;
+        }
+        if (!(*bb)->rbegin()->isRet() && !(*bb)->rbegin()->isCond() && !(*bb)->rbegin()->isUncond())
+            new RetInstruction(nullptr, *bb);
     }
+    // if (func->getBlockList().size() == 1 && !entry->rbegin()->isRet()) {
+    //     new RetInstruction(nullptr, entry);
+    // }
     if (GENCODE_CHECK) printf("%*cFuncDef genCode passed!\n", check_depth--, ' ');
 }
 
@@ -1571,8 +1649,12 @@ void ConstDef::genCode()
         if (se->getType()->isArray()) {
             if (initValue != nullptr) {
                 initValue->genCode();
-                std::vector<int> sizeList = dynamic_cast<ArrayType*>(se->getType())->getSizeList();
-                // 数组怎么初始化？？？
+                std::vector<int> dims = dynamic_cast<ArrayType*>(se->getType())->getSizeList();
+                int size = 1;
+                for (auto dim : dims) size *= dim;
+                Operand **src = new Operand*[size]();
+                initVal2OpPtrArray(src, dims, initValue);
+                initArraybyOpPtr(addr, src, dims, builder->getInsertBB());
             }
         }
         else {
@@ -1594,7 +1676,7 @@ void VarDef::genCode()
         addr_se->setType(new PointerType(se->getType()));
         dynamic_cast<IdentifierSymbolEntry*>(se)->setAddr(new Operand(addr_se));
         std::vector<Operand*> idxs;
-        if (initValue != nullptr) {
+        if (initValue != nullptr && initValue->getList().size() != 0) {
             initValue->genCode();
             if (se->getType()->isArray()) {
                 std::vector<int> dims = dynamic_cast<ArrayType*>(se->getType())->getSizeList();
@@ -1635,8 +1717,12 @@ void VarDef::genCode()
         if (se->getType()->isArray()) {
             if (initValue != nullptr) {
                 initValue->genCode();
-                std::vector<int> sizeList = dynamic_cast<ArrayType*>(se->getType())->getSizeList();
-                // 数组怎么初始化？？？
+                std::vector<int> dims = dynamic_cast<ArrayType*>(se->getType())->getSizeList();
+                int size = 1;
+                for (auto dim : dims) size *= dim;
+                Operand **src = new Operand*[size]();
+                initVal2OpPtrArray(src, dims, initValue);
+                initArraybyOpPtr(addr, src, dims, builder->getInsertBB());
             }
         }
         else {
@@ -1690,8 +1776,9 @@ void initVal2IntArray(int* array, std::vector<int> dims, Node* initVal) {
     for (auto dim : nextDims) row_size *= dim;
     std::vector<Node*> list = ((ListNode*)initVal)->getList();
     if (nextDims.size() == 0) {
-        for (int i = 0; i < (int)list.size(); i++)
-            array[i] = ((ExprNode*)list[i])->getSymbolEntry()->getIntValue();
+        for (int i = 0; i < (int)list.size(); i++) {
+            array[i] = dynamic_cast<ExprNode*>(dynamic_cast<ListNode*>(list[i])->getList()[0])->getSymbolEntry()->getIntValue();
+        }
         return;
     }
     int count1 = 0, count2 = 0, it = 0;
@@ -1728,7 +1815,7 @@ void initVal2FloatArray(float* array, std::vector<int> dims, Node* initVal) {
     std::vector<Node*> list = ((ListNode*)initVal)->getList();
     if (nextDims.size() == 0) {
         for (int i = 0; i < (int)list.size(); i++)
-            array[i] = ((ExprNode*)list[i])->getSymbolEntry()->getIntValue();
+            array[i] = dynamic_cast<ExprNode*>(dynamic_cast<ListNode*>(list[i])->getList()[0])->getSymbolEntry()->getFloatValue();
         return;
     }
     int count1 = 0, count2 = 0, it = 0;
@@ -1757,6 +1844,54 @@ void initVal2FloatArray(float* array, std::vector<int> dims, Node* initVal) {
     }
 }
 
+void initVal2OpPtrArray(Operand** array, std::vector<int> dims, Node* initVal) {
+    std::vector<int> nextDims(dims);
+    nextDims.erase(nextDims.begin());
+    int row_size = 1;
+    for (auto dim : nextDims) row_size *= dim;
+    std::vector<Node*> list = ((ListNode*)initVal)->getList();
+    if (nextDims.size() == 0) {
+        for (int i = 0; i < (int)list.size(); i++)
+            if (list[i]->isList())
+                array[i] = ((ExprNode*)((ListNode*)list[i])->getList()[0])->getOperand();
+            else
+                array[i] = ((ExprNode*)list[i])->getOperand();
+        return;
+    }
+    int count1 = 0, count2 = 0, it = 0;
+    while (count1 < dims[0]) {
+        InitVal nextListNode;
+        count2 = row_size;
+        while (true) {
+            if (it >= (int)list.size()) {
+                initVal2OpPtrArray(array + count1++ * row_size, nextDims, &nextListNode);
+                count1 = dims[0];
+                break;
+            }
+            if (list[it]->isList() && !((ListNode*)list[it])->getList().empty() && ((ListNode*)list[it])->getList()[0]->isList()) {
+                if (nextListNode.getList().size() == 0)
+                    initVal2OpPtrArray(array + count1++ * row_size, nextDims, list[it++]);
+                else
+                    initVal2OpPtrArray(array + count1++ * row_size, nextDims, &nextListNode);
+                break;
+            }
+            if (!count2--) {
+                initVal2OpPtrArray(array + count1++ * row_size, nextDims, &nextListNode);
+                break;
+            }
+            if (list[it]->isList()) {
+                if (((ListNode*)list[it])->getList().size() == 1)
+                    nextListNode.add(((ListNode*)list[it])->getList()[0]);
+                if (((ListNode*)list[it])->getList().size() == 0)
+                    count1++;
+                it++;
+            }
+            else
+                nextListNode.add(list[it++]);
+        }
+    }
+}
+
 std::vector<Operand*> intArray2OpVector(int *array, int size) {
     std::vector<Operand*> ret;
     for (int i = 0; i < size; i++) {
@@ -1771,4 +1906,24 @@ std::vector<Operand*> floatArray2OpVector(float *array, int size) {
         ret.push_back(new Operand(new ConstantSymbolEntry(TypeSystem::floatType, 0, array[i])));
     }
     return ret;
+}
+
+void initArraybyOpPtr(Operand *addr, Operand **src, std::vector<int> dims, BasicBlock *insert_bb) {
+    int size = 1;
+    for (auto dim : dims) size *= dim;
+    for (int i = 0; i < size; i++) {
+        if (src[i] != nullptr) {
+            std::vector<Operand*> idxs;
+            int temp = i;
+            for (int j = dims.size()-1; j >= 0 ; j--) {
+                idxs.insert(idxs.begin(), new Operand(new ConstantSymbolEntry(TypeSystem::intType, temp % dims[j], 0.0)));
+                temp /= dims[j];
+            }
+            idxs.insert(idxs.begin(), new Operand(new ConstantSymbolEntry(TypeSystem::intType, 0, 0.0)));
+            Type* baseType = dynamic_cast<ArrayType*>(dynamic_cast<PointerType*>(addr->getType())->getValueType())->getBaseType(dims.size()-1);
+            Operand *dst_addr = new Operand(new TemporarySymbolEntry(new PointerType(baseType), SymbolTable::getLabel(), 0, 0.0));
+            new getElePtrInstruction(dst_addr, addr, idxs, insert_bb);
+            new StoreInstruction(dst_addr, src[i], insert_bb);
+        }
+    }
 }

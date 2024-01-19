@@ -604,8 +604,12 @@ void initVal2IntArray(int* array, std::vector<int> dims, Node* initVal);
 
 void initVal2FloatArray(float* array, std::vector<int> dims, Node* initVal);
 
+void initVal2OpPtrArray(Operand** array, std::vector<int> dims, Node* initVal);
+
 std::vector<Operand*> intArray2OpVector(int *array, int size);
 
 std::vector<Operand*> floatArray2OpVector(float *array, int size);
+
+void initArraybyOpPtr(Operand *addr, Operand **src, std::vector<int> dims, BasicBlock *insert_bb);
 
 #endif
